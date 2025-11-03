@@ -1,0 +1,54 @@
+{
+  "name": "youbet-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "YouBet - Social Sports Betting Community Platform",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/youbet/youbet"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.15.0",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:e2e": "turbo run test:e2e",
+    "ci": "turbo run lint typecheck test build",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "db:migrate": "turbo run db:migrate --filter=@youbet/database",
+    "db:seed": "turbo run db:seed --filter=@youbet/database",
+    "db:studio": "turbo run db:studio --filter=@youbet/database",
+    "db:generate": "turbo run db:generate --filter=@youbet/database",
+    "db:push": "turbo run db:push --filter=@youbet/database",
+    "db:up": "docker-compose -f docker/docker-compose.yml up -d",
+    "db:down": "docker-compose -f docker/docker-compose.yml down",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md,yml,yaml}\"",
+    "prepare": "husky install"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^8.57.0",
+    "husky": "^9.0.11",
+    "lint-staged": "^15.2.2",
+    "prettier": "^3.2.5",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.5"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,jsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}
+

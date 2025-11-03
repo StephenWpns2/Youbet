@@ -1,0 +1,491 @@
+// YouBet Database Schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// USER & AUTH
+// ============================================================================
+
+model User {
+  id          String   @id @default(cuid())
+  clerkId     String   @unique // Clerk user ID
+  handle      String   @unique // @username
+  email       String   @unique
+  name        String?
+  bio         String?  @db.Text
+  avatarUrl   String?
+  
+  // Compliance
+  ageVerified Boolean  @default(false)
+  dobVerified DateTime? // Date of birth (for age verification)
+  geoRegion   String?  // ISO 3166-2 code (e.g., "US-NY")
+  
+  // Stats (cached, recomputed periodically)
+  totalPicks     Int     @default(0)
+  totalWins      Int     @default(0)
+  totalLosses    Int     @default(0)
+  totalProfit    Decimal @default(0) @db.Decimal(10, 2)
+  roi30d         Decimal @default(0) @db.Decimal(6, 2) // 30-day ROI %
+  roiLifetime    Decimal @default(0) @db.Decimal(6, 2)
+  winRate30d     Decimal @default(0) @db.Decimal(5, 2) // Win rate %
+  winRateLifetime Decimal @default(0) @db.Decimal(5, 2)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  picks        Pick[]
+  reactions    Reaction[]
+  comments     Comment[]
+  followers    Follow[]   @relation("following")
+  following    Follow[]   @relation("followers")
+  tipsReceived Tip[]      @relation("tipsReceived")
+  tipsSent     Tip[]      @relation("tipsSent")
+  reports      Report[]
+  
+  // Messaging
+  conversationMembers ConversationMember[]
+  messages            Message[]
+  messageReactions    MessageReaction[]
+  messageReadReceipts MessageReadReceipt[]
+  contactRequestsSent ContactRequest[]     @relation("requestsSent")
+  contactRequestsReceived ContactRequest[] @relation("requestsReceived")
+  contacts1           Contact[]            @relation("user1")
+  contacts2           Contact[]            @relation("user2")
+  
+  // Auth
+  authProviders AuthProvider[]
+  sessions      Session[]
+  
+  @@index([handle])
+  @@index([clerkId])
+  @@map("users")
+}
+
+// ============================================================================
+// AUTH & SESSIONS
+// ============================================================================
+
+model AuthProvider {
+  id           String   @id @default(cuid())
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String
+  provider     String   // "google", "apple", "phone"
+  providerUserId String // ID from provider
+  accessToken  String?  @db.Text
+  refreshToken String?  @db.Text
+  expiresAt    DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  @@unique([provider, providerUserId])
+  @@index([userId])
+  @@map("auth_providers")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  token     String   @unique
+  ipAddress String?
+  userAgent String?  @db.Text
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  
+  @@index([userId])
+  @@index([token])
+  @@map("sessions")
+}
+
+model Follow {
+  id         String   @id @default(cuid())
+  follower   User     @relation("following", fields: [followerId], references: [id], onDelete: Cascade)
+  followerId String
+  followee   User     @relation("followers", fields: [followeeId], references: [id], onDelete: Cascade)
+  followeeId String
+  createdAt  DateTime @default(now())
+  
+  @@unique([followerId, followeeId])
+  @@index([followerId])
+  @@index([followeeId])
+  @@map("follows")
+}
+
+// ============================================================================
+// EVENTS & PICKS
+// ============================================================================
+
+model Event {
+  id         String   @id @default(cuid())
+  providerId String?  @unique // External event/fixture ID (e.g., from SportsRadar)
+  
+  sport      String   // NBA, NFL, Premier League, etc.
+  league     String   // Specific league/competition
+  homeTeam   String
+  awayTeam   String
+  startTime  DateTime
+  
+  status     EventStatus @default(SCHEDULED)
+  
+  // Results (populated when settled)
+  homeScore  Int?
+  awayScore  Int?
+  winner     String?  // "home", "away", "draw", null
+  settledAt  DateTime?
+  
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  
+  picks      Pick[]
+  
+  @@index([sport, startTime])
+  @@index([status, startTime])
+  @@map("events")
+}
+
+enum EventStatus {
+  SCHEDULED
+  LIVE
+  FINISHED
+  POSTPONED
+  CANCELLED
+}
+
+model Pick {
+  id            String   @id @default(cuid())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId        String
+  event         Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  eventId       String
+  
+  // Pick details
+  market        String   // "Moneyline", "Spread", "Over/Under", "Player Prop"
+  selection     String   // e.g., "Lakers -5.5", "Over 220.5", "LeBron 25+ pts"
+  oddsDecimal   Decimal  @db.Decimal(6, 3) // 1.500 = -200 American, 1/2 Fractional
+  stake         Decimal  @db.Decimal(10, 2) // Amount wagered (USD)
+  book          String   // Sportsbook name (e.g., "DraftKings")
+  
+  // Type
+  type          PickType @default(PREDICTION)
+  
+  // Proof
+  proofType     ProofType?
+  proofUrl      String?  // S3 key or external URL
+  proofHash     String?  // SHA-256 hash for tamper detection
+  
+  // Status
+  status        PickStatus @default(PENDING)
+  profit        Decimal?   @db.Decimal(10, 2) // Computed when settled
+  
+  // Timestamps
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lockedAt      DateTime? // Set when event starts (no more edits)
+  settledAt     DateTime? // Set when result is known
+  
+  // Engagement
+  reactions     Reaction[]
+  comments      Comment[]
+  attributions  Attribution[]
+  
+  @@index([userId, createdAt])
+  @@index([eventId])
+  @@index([status])
+  @@map("picks")
+}
+
+enum PickType {
+  PREDICTION // Before event starts
+  RESULT     // After event (posting a win/loss)
+}
+
+enum ProofType {
+  IMAGE
+  LINK
+  EMAIL
+}
+
+enum PickStatus {
+  PENDING
+  WIN
+  LOSS
+  VOID
+  PUSH
+}
+
+// ============================================================================
+// ENGAGEMENT
+// ============================================================================
+
+model Reaction {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  pick      Pick     @relation(fields: [pickId], references: [id], onDelete: Cascade)
+  pickId    String
+  type      ReactionType
+  createdAt DateTime @default(now())
+  
+  @@unique([userId, pickId, type])
+  @@index([pickId])
+  @@map("reactions")
+}
+
+enum ReactionType {
+  LIKE
+  FIRE
+  CELEBRATE
+  THINKING
+}
+
+model Comment {
+  id        String   @id @default(cuid())
+  pick      Pick     @relation(fields: [pickId], references: [id], onDelete: Cascade)
+  pickId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  text      String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([pickId, createdAt])
+  @@map("comments")
+}
+
+// ============================================================================
+// MONETIZATION
+// ============================================================================
+
+model Attribution {
+  id         String   @id @default(cuid())
+  pick       Pick     @relation(fields: [pickId], references: [id], onDelete: Cascade)
+  pickId     String
+  partner    String   // Sportsbook/affiliate partner ID
+  clickId    String?  // Tracking pixel/click ID
+  revenue    Decimal? @db.Decimal(10, 2) // Commission earned (set via webhook)
+  createdAt  DateTime @default(now())
+  
+  @@index([pickId])
+  @@map("attributions")
+}
+
+model Tip {
+  id        String   @id @default(cuid())
+  from      User     @relation("tipsSent", fields: [fromId], references: [id], onDelete: Cascade)
+  fromId    String
+  to        User     @relation("tipsReceived", fields: [toId], references: [id], onDelete: Cascade)
+  toId      String
+  amount    Int      // Cents (e.g., 500 = $5.00)
+  currency  String   @default("USD")
+  createdAt DateTime @default(now())
+  
+  @@index([toId])
+  @@map("tips")
+}
+
+// ============================================================================
+// MODERATION
+// ============================================================================
+
+model Report {
+  id        String      @id @default(cuid())
+  reporter  User        @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+  reporterId String
+  reason    ReportReason
+  details   String?     @db.Text
+  status    ReportStatus @default(PENDING)
+  
+  // Polymorphic target (pick or comment)
+  targetType String     // "pick" | "comment"
+  targetId   String
+  
+  createdAt DateTime @default(now())
+  reviewedAt DateTime?
+  
+  @@index([status])
+  @@map("reports")
+}
+
+enum ReportReason {
+  SPAM
+  HARASSMENT
+  FRAUD
+  MISLEADING
+  INAPPROPRIATE
+  OTHER
+}
+
+enum ReportStatus {
+  PENDING
+  REVIEWED
+  ACTIONED
+  DISMISSED
+}
+
+// ============================================================================
+// MESSAGING & CONTACTS
+// ============================================================================
+
+model Contact {
+  id         String   @id @default(cuid())
+  user1      User     @relation("user1", fields: [user1Id], references: [id], onDelete: Cascade)
+  user1Id    String
+  user2      User     @relation("user2", fields: [user2Id], references: [id], onDelete: Cascade)
+  user2Id    String
+  isFavorite Boolean  @default(false)
+  isBlocked  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  
+  @@unique([user1Id, user2Id])
+  @@index([user1Id])
+  @@index([user2Id])
+  @@map("contacts")
+}
+
+model ContactRequest {
+  id         String        @id @default(cuid())
+  from       User          @relation("requestsSent", fields: [fromId], references: [id], onDelete: Cascade)
+  fromId     String
+  to         User          @relation("requestsReceived", fields: [toId], references: [id], onDelete: Cascade)
+  toId       String
+  status     RequestStatus @default(PENDING)
+  createdAt  DateTime      @default(now())
+  respondedAt DateTime?
+  
+  @@unique([fromId, toId])
+  @@index([toId, status])
+  @@map("contact_requests")
+}
+
+enum RequestStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+model Conversation {
+  id          String   @id @default(cuid())
+  type        ConversationType
+  name        String?  // For group chats
+  avatarUrl   String?  // For group chats
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastMessageAt DateTime?
+  
+  members     ConversationMember[]
+  messages    Message[]
+  
+  @@index([updatedAt])
+  @@map("conversations")
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+model ConversationMember {
+  id             String       @id @default(cuid())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversationId String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  role           MemberRole   @default(MEMBER)
+  isPinned       Boolean      @default(false)
+  isMuted        Boolean      @default(false)
+  joinedAt       DateTime     @default(now())
+  lastReadAt     DateTime?
+  
+  @@unique([conversationId, userId])
+  @@index([userId])
+  @@index([conversationId])
+  @@map("conversation_members")
+}
+
+enum MemberRole {
+  ADMIN
+  MEMBER
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  conversationId String
+  sender         User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  senderId       String
+  
+  content        String       @db.Text
+  type           MessageType  @default(TEXT)
+  
+  // For replies
+  replyToId      String?
+  replyTo        Message?     @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies        Message[]    @relation("MessageReplies")
+  
+  // Media
+  mediaUrl       String?
+  fileName       String?
+  fileSize       Int?         // Bytes
+  voiceDuration  Int?         // Seconds
+  
+  // Betting slip data (JSON)
+  betData        Json?
+  
+  // Status
+  isEdited       Boolean      @default(false)
+  isDeleted      Boolean      @default(false)
+  
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  
+  reactions      MessageReaction[]
+  readReceipts   MessageReadReceipt[]
+  
+  @@index([conversationId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  FILE
+  VOICE
+  BET_SLIP
+  GAME_ANALYSIS
+}
+
+model MessageReaction {
+  id        String   @id @default(cuid())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  emoji     String   // 👍, ❤️, 😂, 🔥, etc.
+  createdAt DateTime @default(now())
+  
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@map("message_reactions")
+}
+
+model MessageReadReceipt {
+  id        String   @id @default(cuid())
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  messageId String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  readAt    DateTime @default(now())
+  
+  @@unique([messageId, userId])
+  @@index([messageId])
+  @@index([userId])
+  @@map("message_read_receipts")
+}
